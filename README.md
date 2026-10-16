@@ -124,7 +124,7 @@ It has a six-iteration cap and only a read-only catalog tool. It is a separate l
 
 ## Scope
 
-One local user, one application process, fictional IT equipment, integer tax-inclusive INR, no real ERP integration. The policy checker and totals are deterministic; model explanations are advisory. There is no login or organization permission system. The server binds to localhost and must not be exposed publicly without additional authentication and deployment work. The source is published at [raghavpamnani/procureflow](https://github.com/raghavpamnani/procureflow). An actual recorded video and the final assignment-form submission remain.
+One local user, one application process, fictional IT equipment, integer tax-inclusive INR, no real ERP integration. The policy checker and totals are deterministic; model explanations are advisory. There is no login or organization permission system. The server binds to localhost and must not be exposed publicly without additional authentication and deployment work. The source is published at [raghavpamnani/procureflow-week4](https://github.com/raghavpamnani/procureflow-week4). An actual recorded video and the final assignment-form submission remain.
 
 ## Technical references
 

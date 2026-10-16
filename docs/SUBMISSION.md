@@ -8,9 +8,9 @@
 - [ ] Add the public repository and actual demo URL here.
 - [ ] Submit through the official form in the weekly kickoff PDF.
 
-Repository: https://github.com/raghavpamnani/procureflow
+Repository: https://github.com/raghavpamnani/procureflow-week4
 
-Video script: https://github.com/raghavpamnani/procureflow/blob/main/docs/VIDEO_SCRIPT.md
+Video script: https://github.com/raghavpamnani/procureflow-week4/blob/main/docs/VIDEO_SCRIPT.md
 
 Recorded demo: not recorded yet.
 
