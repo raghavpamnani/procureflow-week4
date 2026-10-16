@@ -1,0 +1,37 @@
+{
+  "model": "qwen3:1.7b",
+  "seconds": 6.98,
+  "status": "awaiting_approval",
+  "selected_id": "cedar-32",
+  "rationale": "Cedar Systems Build Pro 15 was selected by the local model: meets all hard requirements; longest eligible warranty. Verified total: INR 870,000; delivery: 12 days; warranty: 3 years.",
+  "model_calls": [
+    {
+      "role": "Route",
+      "usage": {
+        "input_tokens": 85,
+        "output_tokens": 8,
+        "total_tokens": 93
+      },
+      "input_bytes": 48
+    },
+    {
+      "role": "Assessment",
+      "usage": {
+        "input_tokens": 202,
+        "output_tokens": 163,
+        "total_tokens": 365
+      },
+      "input_bytes": 383
+    },
+    {
+      "role": "Recommendation",
+      "usage": {
+        "input_tokens": 425,
+        "output_tokens": 31,
+        "total_tokens": 456
+      },
+      "input_bytes": 898
+    }
+  ],
+  "order_count": 0
+}

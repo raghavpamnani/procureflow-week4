@@ -1,0 +1,8 @@
+[
+ {"id":"atlas-16","supplier":"Atlas Computing","model":"Forge 14","ram_gb":16,"storage_gb":512,"unit_inr":72000,"delivery_days":7,"stock":40,"warranty_years":3,"rating":4.7,"approved":true},
+ {"id":"cedar-32","supplier":"Cedar Systems","model":"Build Pro 15","ram_gb":32,"storage_gb":1024,"unit_inr":87000,"delivery_days":12,"stock":25,"warranty_years":3,"rating":4.8,"approved":true},
+ {"id":"orbit-32","supplier":"Orbit Devices","model":"Vector 14","ram_gb":32,"storage_gb":512,"unit_inr":81000,"delivery_days":5,"stock":20,"warranty_years":2,"rating":4.5,"approved":true},
+ {"id":"atlas-32","supplier":"Atlas Computing","model":"Forge Max 14","ram_gb":32,"storage_gb":1024,"unit_inr":96000,"delivery_days":8,"stock":15,"warranty_years":3,"rating":4.9,"approved":true},
+ {"id":"nova-32","supplier":"Nova Wholesale","model":"Nova X","ram_gb":32,"storage_gb":1024,"unit_inr":66000,"delivery_days":4,"stock":60,"warranty_years":1,"rating":3.8,"approved":false},
+ {"id":"cedar-16","supplier":"Cedar Systems","model":"Build Air 13","ram_gb":16,"storage_gb":512,"unit_inr":65000,"delivery_days":18,"stock":30,"warranty_years":2,"rating":4.4,"approved":true}
+]

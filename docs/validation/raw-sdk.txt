@@ -1,0 +1,13 @@
+Step 1: lookup_laptops -> 467 characters observed
+Unvalidated model answer (read-only learning example):
+Based on the approved suppliers and your budget, the best options are:
+
+1. **Cedar Systems - Build Pro 15**
+   - Total Cost: ₹870,000
+   - Features: 32 GB RAM, 1024 GB Storage, 12 Days Delivery, 3 Years Warranty, 4.8 Rating
+
+2. **Orbit Devices - Vector 14**
+   - Total Cost: ₹810,000
+   - Features: 32 GB RAM, 512 GB Storage, 5 Days Delivery, 2 Years Warranty, 4.5 Rating
+
+Both options are within your budget and approved.
