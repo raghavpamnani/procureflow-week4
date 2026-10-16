@@ -13,3 +13,20 @@ jobs:
       - run: python -m ruff format --check procureflow scripts tests
       - run: python -m pytest -q
       - run: python scripts/evaluate.py
+  container:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: docker compose config --quiet
+      - run: docker build -t procureflow:ci .
+      - run: docker run -d --name pf-ci -p 127.0.0.1:18040:8040 -v pf-ci-data:/data procureflow:ci
+      - run: test "$(docker exec pf-ci id -u)" != "0"
+      - run: python scripts/container_smoke.py
+      - if: failure()
+        run: docker logs pf-ci
+      - if: always()
+        run: docker rm -f pf-ci; docker volume rm pf-ci-data

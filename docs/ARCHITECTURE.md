@@ -2,9 +2,9 @@
 
 ## Why this project
 
-A purchasing request has a concrete outcome, several independent sources of evidence, and a legitimate approval boundary. A three-agent design is enough: supervisor, requirements analyst, and recommendation specialist. Catalog retrieval and policy checking are deterministic workers; calling them "agents" would overstate their autonomy. The executor is a restricted write path, never a model-owned tool.
+A purchasing request has a concrete outcome, several independent sources of evidence, and a legitimate approval boundary. The model specialists are the supervisor, requirements analyst, supplier research agent, and recommendation specialist. The supplier agent selects native MCP read calls; policy checking remains deterministic. The executor is a restricted write path, never a model-owned tool.
 
-This is a local single-user teaching application, not an ERP or payment processor. All six products and suppliers are fictional. Prices are integer INR inclusive of GST. No real bookings, emails, payments, or purchases occur.
+This is a local multi-account teaching application, not an ERP or payment processor. All six products and suppliers are fictional. Prices are integer INR inclusive of GST. No real bookings, emails, payments, or purchases occur.
 
 ```mermaid
 flowchart TD
@@ -36,7 +36,8 @@ flowchart TD
 - `tools.py`: official MCP client; `initialize`, `list_tools`, then `call_tool` over stdio to a separate Python process. Up to three attempts for explicitly retryable tool results.
 - `mcp_server.py`: official FastMCP server; exposes four tools with discovered JSON schemas.
 - `store.py`: independent business SQLite connection per operation, WAL, transaction-bound stock/budget checks and idempotent writes.
-- `memory.py`: extractive summary of older turns plus four recent exchanges. Structured requirements remain authoritative. Full history remains in checkpoints.
+- `memory.py`: typed semantic facts plus four recent exchanges. In model mode, the model merges older discussion into preferences, decisions and unresolved questions; demo mode uses deterministic structured records. Structured requirements remain authoritative. Full history remains in checkpoints.
+- `auth.py`: scrypt password hashes, revocable persistent sessions, roles and rate limits. `accounts.py` provisions accounts through the trusted local operator interface.
 
 ## State schema
 
@@ -49,7 +50,9 @@ flowchart TD
 | `recommendation`, `proposal`, `proposal_hash` | Explanation, exact action payload, SHA-256 fingerprint |
 | `revision` | Maximum four revision cycles |
 | `audit` | Append-only list reducer, `operator.add`; nodes return dictionary updates |
-| `recent_turns`, `memory_summary` | Bounded working context; older notes condensed extractively |
+| `recent_turns`, `memory_summary`, `memory_facts` | Bounded recent context and typed semantic summary |
+| `owner_id`, `reviewer` | Immutable requester identity and independent approval identity |
+| `tool_trace` | Native selected tools, checked/canonical arguments and observed outcomes |
 | `context_bytes`, `model_usage` | Measured bytes and reported model token usage, kept distinct |
 | `order` | Confirmed local order receipt |
 | `parent` | Source request and checkpoint for an alternative branch |
@@ -85,12 +88,15 @@ This is a conservative checkpoint-based alternative branch, not an undo of exter
 ## Context and iteration budgets
 
 - Four revisions maximum; graph recursion limit 80 per invocation.
-- MCP tool attempts: three; 20-second read timeout per call.
+- MCP tool attempts: three; real asynchronous 20-second read deadline per call.
+- Native supplier loop: five iterations, at most two calls per iteration, only catalog/budget read tools. Unexpected read argument names are removed through explicit, audited normalization; traces retain both proposed and executed arguments. Request identity and fault settings are injected from validated state.
 - Model request timeout: 90 seconds; output cap: 700 tokens; configured context: 8192.
 - Worker input including schema/system/task is capped at 6500 UTF-8 bytes. This is a conservative guard for the tested model, not an exact tokenizer count. Ollama-reported usage is recorded separately.
-- Recent conversation: four turns and a 6000-byte serialized working-memory ceiling. Summary is bounded to 1800 UTF-8 bytes. Hard constraints are stored separately and are never recovered from a potentially lossy summary.
+- Recent conversation: four turns and a 6000-byte serialized working-memory ceiling. Typed summary is bounded to 2000 UTF-8 bytes. Hard constraints are stored separately and are never recovered from a potentially lossy summary.
 - Full checkpoint history is intentionally retained for audit and time travel; active-context pruning is not database retention management.
 
 ## Operational limits
 
-One Uvicorn worker on localhost only. No user accounts or RBAC. SQLite business files are protected by the local filesystem, not application-level encryption. Use trusted local inputs; model explanations are advisory and can be wrong. Formal checks and totals are deterministic. Multiple app processes sharing a home are unsupported despite transactional order insertion. Human reviews have no expiry; commit-time revalidation catches changed terms. No automatic purchase is allowed when no quote meets every constraint.
+One Uvicorn worker with locally provisioned requester and approver accounts. Requesters can read and revise their own requests; an independent approver is required for order execution. Sessions and rate limits persist in SQLite. The native and container launchers expose HTTP on localhost only. The container process runs non-root and stores databases in a named volume. See SECURITY.md and DOCKER.md for exact boundaries.
+
+Someone with arbitrary Python execution or database-file access is a trusted local operator; internal tests/evaluation SDK calls can create isolated fixtures without accounts. There is no public anonymous business API. There is no organization tenancy, MFA, password reset or encrypted database. Multiple app workers sharing a home are unsupported despite transactional order insertion. Sensitive production use requires further deployment work. Human reviews have no expiry; commit-time revalidation catches changed terms. No automatic purchase is allowed when no quote meets every constraint.

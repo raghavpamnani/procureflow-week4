@@ -14,17 +14,39 @@ class ToolFailure(RuntimeError):
 
 
 class ProcurementTools:
-    def __init__(self, session, schemas):
+    def __init__(self, session, schemas, timeout_seconds=20):
         self.session, self.schemas = session, schemas
         self.events = []
+        self.timeout_seconds = timeout_seconds
 
     async def call(self, name, arguments=None):
         if name not in self.schemas:
             raise ToolFailure(f"Tool not discovered: {name}")
         for attempt in range(1, 4):
-            result = await self.session.call_tool(
-                name, arguments or {}, read_timeout_seconds=timedelta(seconds=20)
-            )
+            try:
+                async with asyncio.timeout(self.timeout_seconds):
+                    result = await self.session.call_tool(
+                        name,
+                        arguments or {},
+                        read_timeout_seconds=timedelta(
+                            seconds=self.timeout_seconds + 1
+                        ),
+                    )
+            except TimeoutError:
+                self.events.append(
+                    {
+                        "tool": name,
+                        "attempt": attempt,
+                        "ok": False,
+                        "detail": "MCP read deadline exceeded",
+                    }
+                )
+                if attempt == 3:
+                    raise ToolFailure(
+                        "MCP read deadline exceeded after three attempts"
+                    ) from None
+                await asyncio.sleep(0.15 * attempt)
+                continue
             content = result.structuredContent
             if content is None:
                 raw = "\n".join(x.text for x in result.content if x.type == "text")

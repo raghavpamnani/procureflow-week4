@@ -31,6 +31,8 @@ class Store:
               CREATE TABLE IF NOT EXISTS proposals(request_id TEXT PRIMARY KEY, hash TEXT, payload TEXT, approved INTEGER DEFAULT 0);
               CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY, request_id TEXT UNIQUE, proposal_hash TEXT, payload TEXT, created TEXT);
               CREATE TABLE IF NOT EXISTS faults(key TEXT PRIMARY KEY);
+              CREATE TABLE IF NOT EXISTS ownership(request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS approval_actors(request_id TEXT PRIMARY KEY, proposal_hash TEXT, user_id TEXT, role TEXT);
             """)
             if not c.execute("SELECT count(*) FROM catalog").fetchone()[0]:
                 for item in json.loads((ROOT / "data/catalog.json").read_text()):
@@ -79,6 +81,24 @@ class Store:
                 (rid, request["title"], status, mode, now()),
             )
 
+    def bind_owner(self, rid, user_id):
+        with self.connect() as c:
+            c.execute("INSERT OR IGNORE INTO ownership VALUES (?,?)", (rid, user_id))
+            if (
+                c.execute(
+                    "SELECT user_id FROM ownership WHERE request_id=?", (rid,)
+                ).fetchone()[0]
+                != user_id
+            ):
+                raise PermissionError("Request ownership cannot be reassigned")
+
+    def owner(self, rid):
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT user_id FROM ownership WHERE request_id=?", (rid,)
+            ).fetchone()
+            return row[0] if row else None
+
     def status(self, rid, status):
         with self.connect() as c:
             c.execute(
@@ -102,8 +122,22 @@ class Store:
             )
         return h
 
-    def authorize(self, rid, h):
+    def authorize(self, rid, h, reviewer=None):
+        owner = self.owner(rid)
+        if owner and (
+            not reviewer
+            or reviewer.get("role") != "approver"
+            or reviewer.get("id") == owner
+        ):
+            raise PermissionError(
+                "A different authenticated approver must approve this request"
+            )
         with self.connect() as c:
+            if reviewer:
+                c.execute(
+                    "INSERT INTO approval_actors VALUES (?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET proposal_hash=excluded.proposal_hash,user_id=excluded.user_id,role=excluded.role",
+                    (rid, h, reviewer["id"], reviewer["role"]),
+                )
             if (
                 c.execute(
                     "UPDATE proposals SET approved=1 WHERE request_id=? AND hash=?",
@@ -135,6 +169,20 @@ class Store:
             ).fetchone()
             if not row or row[1] != h or row[2] != 1:
                 raise ValueError("No matching human approval. Order creation blocked.")
+            owner = c.execute(
+                "SELECT user_id FROM ownership WHERE request_id=?", (rid,)
+            ).fetchone()
+            actor = c.execute(
+                "SELECT proposal_hash,user_id,role FROM approval_actors WHERE request_id=?",
+                (rid,),
+            ).fetchone()
+            if owner and (
+                not actor
+                or actor[0] != h
+                or actor[1] == owner[0]
+                or actor[2] != "approver"
+            ):
+                raise PermissionError("Missing independent approver identity")
             p = json.loads(row[0])
             req = p["request"]
             row = c.execute(
@@ -175,6 +223,7 @@ class Store:
                 "proposal_hash": h,
                 "created": now(),
                 "environment": "local simulation",
+                "approved_by": actor[1] if actor else "trusted-local-sdk",
             }
             item["stock"] -= req["quantity"]
             c.execute(

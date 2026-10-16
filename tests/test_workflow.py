@@ -14,6 +14,22 @@ from procureflow.service import Conflict, open_service
 from procureflow.store import Store
 
 
+def seed_client(client):
+    auth = client.app.state.auth
+    for role in ["requester", "approver"]:
+        auth.create_user(role, "Test-password-12345", role)
+    login_client(client, "requester")
+
+
+def login_client(client, username):
+    response = client.post(
+        "/api/auth/login",
+        json={"username": username, "password": "Test-password-12345"},
+    )
+    assert response.status_code == 200
+    return response.json()["user"]
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -72,9 +88,23 @@ def test_real_mcp_restart_approval_and_idempotency(tmp_path):
 
 
 def test_true_separate_process_restart(tmp_path):
+    from procureflow.auth import Auth
+
+    auth = Auth(tmp_path)
+    for role in ["requester", "approver"]:
+        auth.create_user(role, "Test-password-12345", role)
     env = dict(os.environ, PROCUREFLOW_HOME=str(tmp_path), PROCUREFLOW_MODE="demo")
     create = subprocess.run(
-        [sys.executable, "-m", "procureflow.cli", "new", "--timeout"],
+        [
+            sys.executable,
+            "-m",
+            "procureflow.cli",
+            "--username",
+            "requester",
+            "new",
+            "--timeout",
+        ],
+        input="Test-password-12345\n",
         capture_output=True,
         text=True,
         env=env,
@@ -82,8 +112,16 @@ def test_true_separate_process_restart(tmp_path):
     )
     state = json.loads(create.stdout)
     approved = subprocess.run(
-        [sys.executable, "-m", "procureflow.cli", "approve", state["request_id"]],
-        input="APPROVE\n",
+        [
+            sys.executable,
+            "-m",
+            "procureflow.cli",
+            "--username",
+            "approver",
+            "approve",
+            state["request_id"],
+        ],
+        input="Test-password-12345\nAPPROVE\n",
         capture_output=True,
         text=True,
         env=env,
@@ -216,6 +254,7 @@ def test_unapproved_cheapest_supplier_is_never_selected(tmp_path):
 
 def test_api_validation_stale_decision_and_cross_origin(tmp_path):
     with TestClient(create_app(tmp_path, "demo")) as c:
+        seed_client(c)
         assert c.get("/").status_code == 200
         assert c.get("/static/app.js").status_code == 200
         assert c.post("/api/requests", json={"quantity": 0}).status_code == 422
@@ -229,6 +268,7 @@ def test_api_validation_stale_decision_and_cross_origin(tmp_path):
         assert created.status_code == 201
         a = created.json()
         assert c.get(f"/api/requests/{a['request_id']}").json()["pending"]
+        login_client(c, "approver")
         assert (
             c.post(
                 f"/api/requests/{a['request_id']}/decision",
@@ -362,6 +402,7 @@ def test_background_job_and_downloadable_report(tmp_path):
     import time
 
     with TestClient(create_app(tmp_path, "demo")) as c:
+        seed_client(c)
         assert c.get("/api/meta").json()["workspace_id"]
         r = c.post("/api/jobs", json={"simulate_timeout": True})
         assert r.status_code == 202
@@ -408,3 +449,260 @@ def test_historical_brief_restores_the_selected_revision(tmp_path):
             assert not s.store.orders()
 
     run(scenario())
+
+
+def test_authentication_roles_and_ownership(tmp_path):
+    with TestClient(create_app(tmp_path, "demo")) as c:
+        assert c.get("/api/requests").status_code == 401
+        seed_client(c)
+        requester = login_client(c, "requester")
+        a = c.post("/api/requests", json={}).json()
+        assert a["owner_id"] == requester["id"]
+        decision = {"action": "approve", "proposal_hash": a["proposal_hash"]}
+        assert (
+            c.post(
+                f"/api/requests/{a['request_id']}/decision", json=decision
+            ).status_code
+            == 403
+        )
+        c.app.state.auth.create_user(
+            "other-requester", "Test-password-12345", "requester"
+        )
+        login_client(c, "other-requester")
+        assert c.get(f"/api/requests/{a['request_id']}").status_code == 403
+        assert c.get("/api/requests").json() == []
+        approver = login_client(c, "approver")
+        assert c.post("/api/requests", json={}).status_code == 403
+        revised = {
+            "action": "revise",
+            "proposal_hash": a["proposal_hash"],
+            "revision": {},
+        }
+        assert (
+            c.post(
+                f"/api/requests/{a['request_id']}/decision", json=revised
+            ).status_code
+            == 403
+        )
+        out = c.post(f"/api/requests/{a['request_id']}/decision", json=decision)
+        assert out.status_code == 200
+        assert out.json()["order"]["approved_by"] == approver["id"]
+        assert len(c.get("/api/orders").json()) == 1
+        assert (
+            "httponly"
+            in c.post(
+                "/api/auth/login",
+                json={"username": "approver", "password": "Test-password-12345"},
+            )
+            .headers["set-cookie"]
+            .lower()
+        )
+        assert c.post("/api/auth/logout").status_code == 200
+        assert c.get("/api/requests").status_code == 401
+
+
+def test_sessions_and_rate_limits_survive_restart(tmp_path):
+    from procureflow.auth import Auth
+
+    auth = Auth(tmp_path)
+    user = auth.create_user("requester", "Unique-test-password-123", "requester")
+    token, _ = auth.login("requester", "Unique-test-password-123")
+    again = Auth(tmp_path)
+    assert again.user(token)["id"] == user["id"]
+    assert again.consume("test", 2)
+    assert again.consume("test", 2)
+    assert not Auth(tmp_path).consume("test", 2)
+    again.logout(token)
+    assert auth.user(token) is None
+    with auth.connect() as c:
+        row = c.execute("SELECT password_hash FROM users").fetchone()[0]
+        session = c.execute("SELECT count(*) FROM sessions").fetchone()[0]
+    assert "Unique-test-password" not in row
+    assert session == 0
+
+
+def test_login_bruteforce_limit(tmp_path):
+    with TestClient(create_app(tmp_path, "demo")) as c:
+        for _ in range(10):
+            assert (
+                c.post(
+                    "/api/auth/login",
+                    json={"username": "unknown", "password": "incorrect"},
+                ).status_code
+                == 401
+            )
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "unknown", "password": "incorrect"}
+            ).status_code
+            == 429
+        )
+
+
+def test_native_tool_loop_and_read_only_scope(tmp_path):
+    from langchain_core.messages import AIMessage
+
+    async def scenario():
+        async with open_service(tmp_path, "demo") as service:
+
+            class Model:
+                def __init__(self, responses):
+                    self.responses = iter(responses)
+
+                def bind_tools(self, schemas):
+                    assert {x["function"]["name"] for x in schemas} == {
+                        "search_catalog",
+                        "get_budget",
+                    }
+                    return self
+
+                async def ainvoke(self, messages):
+                    return next(self.responses)
+
+            service.agents.mode = "ollama"
+            service.agents.llm = Model(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "search_catalog",
+                                "args": {"request_id": "model-cannot-change-this"},
+                                "id": "one",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "get_budget",
+                                "args": {},
+                                "id": "two",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+            result = await service.agents.research(
+                PurchaseRequest().model_dump(), service.tools, "authoritative-id"
+            )
+            assert len(result["trace"]) == 2
+            assert (
+                result["trace"][0]["executed_arguments"]["request_id"]
+                == "authoritative-id"
+            )
+            service.agents.llm = Model(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "create_purchase_order",
+                                "args": {},
+                                "id": "bad",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+            with pytest.raises(PermissionError, match="read-only"):
+                await service.agents.research(
+                    PurchaseRequest().model_dump(), service.tools, "x"
+                )
+            assert not service.store.orders()
+
+    run(scenario())
+
+
+def test_mcp_actual_deadline_has_bounded_retries():
+    from procureflow.tools import ProcurementTools, ToolFailure
+
+    class SlowSession:
+        async def call_tool(self, *args, **kwargs):
+            await asyncio.sleep(1)
+
+    async def scenario():
+        tools = ProcurementTools(
+            SlowSession(), {"search_catalog": {}}, timeout_seconds=0.01
+        )
+        with pytest.raises(ToolFailure, match="three attempts"):
+            await tools.call("search_catalog")
+        assert len(tools.events) == 3
+        assert all(not e["ok"] for e in tools.events)
+
+    run(scenario())
+
+
+def test_semantic_summary_schema_and_recent_turns():
+    from procureflow.agents import Agents
+    from procureflow.memory import MemoryFacts
+
+    async def scenario():
+        agents = Agents("demo")
+        agents.mode = "ollama"
+        seen = []
+
+        async def summarize(schema, task, data):
+            assert schema is MemoryFacts
+            seen.append(data)
+            return MemoryFacts(
+                preferences=["Prefer long warranty"],
+                decisions=["Previous quote rejected"],
+                unresolved_questions=["Confirm delivery deadline"],
+            )
+
+        agents.structured = summarize
+        turns = [
+            {"role": "request", "text": "Prefer long warranty"},
+            {"role": "human revision", "text": "Reject previous quote"},
+        ] + [{"role": "request", "text": "recent"}] * 4
+        result = await agents.remember(turns, "")
+        assert result["memory_facts"]["preferences"] == ["Prefer long warranty"]
+        assert result["memory_facts"]["unresolved_questions"] == [
+            "Confirm delivery deadline"
+        ]
+        assert len(result["recent_turns"]) == 4
+        assert len(seen) == 2
+        assert result["context_bytes"] <= 6000
+
+    run(scenario())
+
+
+def test_process_crash_after_order_commit_before_checkpoint(tmp_path):
+    crash_code = """
+import asyncio,os
+from procureflow.service import open_service
+from procureflow.schemas import PurchaseRequest,Decision
+async def main():
+ async with open_service(os.environ["PROCUREFLOW_HOME"],"demo") as s:
+  state=await s.create(PurchaseRequest())
+  with open(os.path.join(os.environ["PROCUREFLOW_HOME"],"request-id.txt"),"w") as f: f.write(state["request_id"])
+  original=s.tools.call
+  async def crash(name,args=None):
+   result=await original(name,args)
+   if name=="create_purchase_order": os._exit(77)
+   return result
+  s.tools.call=crash
+  await s.decide(state["request_id"],Decision(action="approve",proposal_hash=state["proposal_hash"]))
+asyncio.run(main())
+"""
+    env = dict(os.environ, PROCUREFLOW_HOME=str(tmp_path))
+    process = subprocess.run(
+        [sys.executable, "-c", crash_code],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert process.returncode == 77, process.stderr
+    assert len(Store(tmp_path).orders()) == 1
+    rid = (tmp_path / "request-id.txt").read_text()
+
+    async def recover():
+        async with open_service(tmp_path, "demo") as s:
+            out = await s.retry(rid)
+            assert out["status"] == "completed"
+            assert len(s.store.orders()) == 1
+            assert s.store.budget()["committed_inr"] == 810000
+
+    run(recover())

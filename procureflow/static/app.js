@@ -1,12 +1,15 @@
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n => '₹' + Number(n).toLocaleString('en-IN');
+let user = null;
+document.body.classList.add('auth-locked');
 let storageKey = 'procureflow-request';
 let current = null, branch = null, busy = false, approvalArmed = false;
 async function api(path, options = {}) {
   const r = await fetch('/api' + path, {headers:{'Content-Type':'application/json'}, ...options});
   let data;
   try { data = await r.json(); } catch { throw new Error('The server could not complete this request. See the terminal and retry.'); }
+  if (r.status===401 && !path.startsWith('/auth/')) { user=null; document.body.classList.add('auth-locked'); $('login-screen').classList.remove('hidden'); }
   if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data));
   return data;
 }
@@ -15,7 +18,7 @@ async function action(fn) {
   if (busy) return;
   busy = true; document.querySelectorAll('button').forEach(b => b.disabled = true);
   try { await fn(); } catch (e) { toast(e.message, true); }
-  finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); if (current) syncControls(); }
+  finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); if (current) syncControls(); else if(user)$('submit').disabled=user.role!=='requester'; }
 }
 function brief() {
   return {title:$('title').value, quantity:Number($('quantity').value), budget_inr:Number($('budget-inr').value), min_ram_gb:Number($('ram').value), min_storage_gb:Number($('storage').value), delivery_days:Number($('days').value), priority:$('priority').value, notes:$('notes').value, simulate_timeout:$('timeout').checked};
@@ -24,7 +27,9 @@ function fill(r) { $('title').value=r.title; $('quantity').value=r.quantity; $('
 function showDesk() { $('desk-view').classList.remove('hidden'); $('orders-view').classList.add('hidden'); $('nav-desk').classList.add('active'); $('nav-orders').classList.remove('active'); }
 async function refresh() {
   const [meta, requests, orders] = await Promise.all([api('/meta'), api('/requests'), api('/orders')]);
-  storageKey='procureflow-request:'+meta.workspace_id;
+  storageKey='procureflow-request:'+meta.workspace_id+':'+user.id;
+  $('signed-in').textContent=user.username+' / '+user.role;
+  $('submit').disabled=busy || user.role!=='requester';
   $('mode').textContent = meta.mode === 'demo' ? 'DEMO MODE · NO LLM' : 'LOCAL MODEL · ' + meta.model;
   $('budget').textContent = money(meta.budget.available_inr);
   $('count-active').textContent = requests.filter(r=>r.status==='awaiting_approval').length;
@@ -35,8 +40,11 @@ async function refresh() {
 function syncControls() {
   const pending = Boolean(current?.pending?.length);
   $('approval-controls').classList.toggle('hidden', !pending);
-  $('approve').disabled = busy || !pending || !current?.proposal?.selected_id;
-  $('revise').disabled = busy || !pending || current.revision >= 4;
+  $('approve').disabled = busy || !pending || !current?.proposal?.selected_id || user.role!=='approver' || current.owner_id===user.id;
+  $('reject').disabled=busy || !pending || user.role!=='approver' || current.owner_id===user.id;
+  $('revise').disabled = busy || !pending || current.revision >= 4 || current.owner_id!==user.id;
+  $('fork').disabled=busy || user.role!=='requester';
+  $('submit').disabled=busy || user.role!=='requester';
   $('retry').classList.toggle('hidden', pending || !current.next?.length);
 }
 async function render(s) {
@@ -45,6 +53,7 @@ async function render(s) {
   $('workflow-status').textContent=s.status.replaceAll('_',' '); $('result-status').textContent=s.status.replaceAll('_',' ').toUpperCase();
   $('submit').innerHTML='Start a new request <span>→</span>';
   $('activity').innerHTML=(s.audit||[]).map(e=>`<div class="activity-event"><strong>${esc(e.actor)}</strong><p>${esc(e.detail)}</p>${e.note?`<p>Review: ${esc(e.note)}</p>`:''}${(e.tools||[]).map(t=>`<div class="tool-event ${t.ok?'':'failed'}">${esc(t.tool)} · attempt ${t.attempt} · ${esc(t.detail)}</div>`).join('')}</div>`).join('');
+  $('agent-evidence').textContent=JSON.stringify({native_tool_calls:s.tool_trace||[],semantic_memory:s.memory_facts||{},model_calls:s.model_usage||[]},null,2);
   const p=s.proposal, rec=s.recommendation;
   $('recommendation').innerHTML = p?.selected_id ? `<div class="eyebrow">RECOMMENDED OPTION</div><h3>${esc(p.supplier)} · ${esc(p.model)}</h3><strong class="price">${money(p.total_inr)}<small>GST included</small></strong><div class="facts"><span class="fact">${p.quantity} laptops</span><span class="fact">${p.delivery_days}-day delivery</span><span class="fact">${p.warranty_years}-year warranty</span></div><p>${esc(rec.rationale)}</p>${rec.tradeoffs.map(t=>`<p class="subtle">• ${esc(t)}</p>`).join('')}` : `<h3>${s.errors?.length?'Workflow needs attention':'No eligible option yet.'}</h3><p>${esc(rec?.rationale || 'A step could not finish. Check the error and retry.')}</p><p>${esc(s.errors?.join('; ') || '')}</p>`;
   $('order-receipt').innerHTML=s.order?`<div class="receipt"><small>PURCHASE ORDER CREATED</small><strong>${esc(s.order.id)}</strong><p>${money(s.order.total_inr)} · ${s.order.quantity} units</p><small>Stored once. Repeated approval cannot create a duplicate.</small></div>`:'';
@@ -102,4 +111,13 @@ $('retry').onclick=()=>action(async()=>render(await api(`/requests/${current.req
 $('request-list').onclick=e=>{const b=e.target.closest('[data-request]');if(b)action(async()=>render(await api('/requests/'+b.dataset.request)));};
 $('nav-desk').onclick=showDesk;
 $('nav-orders').onclick=()=>action(async()=>{await refresh();$('desk-view').classList.add('hidden');$('orders-view').classList.remove('hidden');$('nav-desk').classList.remove('active');$('nav-orders').classList.add('active');});
-(async()=>{try{await refresh();const id=localStorage.getItem(storageKey);if(id){const job=await api('/jobs/'+id);if(job.running)await render(await watchJob(id));else if(job.state.request)await render(job.state);else toast('This request was interrupted before its first checkpoint. Start a new request.');}}catch(e){toast(e.message,true)}})();
+async function loadWorkspace(){
+  await refresh();
+  const id=localStorage.getItem(storageKey);
+  if(id){const job=await api('/jobs/'+id);if(job.running)await render(await watchJob(id));else if(job.state.request)await render(job.state);}
+}
+$('login-form').addEventListener('submit',e=>{e.preventDefault();action(async()=>{
+  try{const result=await api('/auth/login',{method:'POST',body:JSON.stringify({username:$('login-username').value,password:$('login-password').value})});user=result.user;$('login-password').value='';$('login-error').textContent='';$('login-screen').classList.add('hidden');document.body.classList.remove('auth-locked');await loadWorkspace();}catch(err){$('login-error').textContent=err.message;}
+});});
+$('logout').onclick=()=>action(async()=>{await api('/auth/logout',{method:'POST'});user=null;current=null;branch=null;$('result').classList.add('hidden');$('activity').classList.add('hidden');$('empty-state').classList.remove('hidden');$('login-screen').classList.remove('hidden');document.body.classList.add('auth-locked');});
+(async()=>{try{const session=await api('/auth/session');if(!session.configured)$('login-help').textContent='No accounts configured. Run the documented bootstrap-demo command locally to create independent requester and approver accounts.';if(session.user){user=session.user;$('login-screen').classList.add('hidden');document.body.classList.remove('auth-locked');await loadWorkspace();}}catch(e){toast(e.message,true)}})();

@@ -1,0 +1,56 @@
+{
+  "at": "2026-10-16T09:25:55.068577+00:00",
+  "mode": "demo - deterministic golden scenarios, not an LLM benchmark",
+  "passed": 8,
+  "total": 8,
+  "scenarios": [
+    {
+      "scenario": "value",
+      "expected": "orbit-32",
+      "actual": "orbit-32",
+      "passed": true
+    },
+    {
+      "scenario": "performance",
+      "expected": "cedar-32",
+      "actual": "cedar-32",
+      "passed": true
+    },
+    {
+      "scenario": "delivery",
+      "expected": "orbit-32",
+      "actual": "orbit-32",
+      "passed": true
+    },
+    {
+      "scenario": "infeasible budget",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    },
+    {
+      "scenario": "infeasible RAM",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    },
+    {
+      "scenario": "infeasible deadline",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    },
+    {
+      "scenario": "16 GB request",
+      "expected": "atlas-16",
+      "actual": "atlas-16",
+      "passed": true
+    },
+    {
+      "scenario": "1 TB requirement",
+      "expected": "cedar-32",
+      "actual": "cedar-32",
+      "passed": true
+    }
+  ]
+}

@@ -4,7 +4,6 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .memory import compact
 from .schemas import Decision, PurchaseRequest
 from .store import now
 
@@ -33,6 +32,11 @@ class State(TypedDict, total=False):
     evicted_turns: int
     model_usage: list[dict]
     parent: dict | None
+    owner_id: str
+    reviewer: dict | None
+    decision_actor: dict | None
+    memory_facts: dict
+    tool_trace: list[dict]
 
 
 def event(actor, detail, **extra):
@@ -87,19 +91,16 @@ def build_graph(checkpointer, tools, agents, store):
     async def suppliers(s):
         start = len(tools.events)
         # Scope: supplier worker sees only catalog discovery, never the write tool.
-        result = await tools.call(
-            "search_catalog",
-            {
-                "request_id": s["request_id"] + f":r{s.get('revision', 0)}",
-                "simulate_timeout": s["request"]["simulate_timeout"],
-            },
+        result = await agents.research(
+            s["request"], tools, s["request_id"] + f":r{s.get('revision', 0)}"
         )
         return {
             "quotes": result["quotes"],
+            "tool_trace": result["trace"],
             "audit": [
                 event(
                     "Supplier worker",
-                    "Retrieved quotes through MCP",
+                    "Native tool loop completed read-only MCP research",
                     tools=tools.events[start:],
                 )
             ],
@@ -154,7 +155,7 @@ def build_graph(checkpointer, tools, agents, store):
                 "revision": s.get("revision", 0),
             }
         h = store.save_proposal(s["request_id"], proposal)
-        memory = compact(
+        memory = await agents.remember(
             s.get("recent_turns", [])
             + [{"role": "recommendation", "text": rec["rationale"]}],
             s.get("memory_summary", ""),
@@ -176,7 +177,7 @@ def build_graph(checkpointer, tools, agents, store):
             ],
         }
 
-    async def approval(s):
+    async def approval(s, config):
         # No external side effects before interrupt: this node restarts on resume.
         payload = {
             "kind": "purchase_approval",
@@ -189,12 +190,25 @@ def build_graph(checkpointer, tools, agents, store):
         d = Decision.model_validate(interrupt(payload))
         if d.proposal_hash != s["proposal_hash"]:
             raise ValueError("Stale approval")
-        audit = [event("Human reviewer", d.action, note=d.note)]
+        reviewer = config["configurable"].get("decision_actor")
+        audit = [
+            event(
+                "Human reviewer",
+                d.action,
+                note=d.note,
+                user=(reviewer or {}).get("username", "trusted-local-sdk"),
+            )
+        ]
         if d.action == "approve":
             if not s["proposal"]["selected_id"]:
                 raise ValueError("Cannot approve an infeasible proposal")
-            store.authorize(s["request_id"], d.proposal_hash)
-            return {"action": "execute", "status": "approved", "audit": audit}
+            store.authorize(s["request_id"], d.proposal_hash, reviewer)
+            return {
+                "action": "execute",
+                "status": "approved",
+                "reviewer": reviewer,
+                "audit": audit,
+            }
         store.invalidate(s["request_id"])
         if d.action == "reject":
             store.status(s["request_id"], "rejected")

@@ -1,13 +1,31 @@
 import argparse
 import asyncio
+import getpass
 import json
+import os
+from pathlib import Path
 
+from .auth import Auth
 from .schemas import Decision, PurchaseRequest
 from .service import open_service
 
 
 async def run(args):
-    async with open_service(args.home, args.mode) as s:
+    home = Path(args.home or os.environ.get("PROCUREFLOW_HOME", ".runtime")).resolve()
+    auth = Auth(home)
+    if not auth.consume("cli-login:" + args.username, 10):
+        raise PermissionError("Too many CLI login attempts")
+    token, actor = auth.login(args.username, getpass.getpass("Account password: "))
+    auth.logout(token)  # CLI identity is used for this operation only.
+    async with open_service(home, args.mode) as s:
+        if args.command == "new" and actor["role"] != "requester":
+            raise PermissionError("Only requesters can create requests")
+        if (
+            hasattr(args, "id")
+            and actor["role"] != "approver"
+            and s.store.owner(args.id) != actor["id"]
+        ):
+            raise PermissionError("This request belongs to another user")
         if args.command == "new":
             req = PurchaseRequest(
                 quantity=args.quantity,
@@ -17,7 +35,7 @@ async def run(args):
                 priority=args.priority,
                 simulate_timeout=args.timeout,
             )
-            out = await s.create(req)
+            out = await s.create(req, actor=actor)
         elif args.command == "show":
             out = await s.get(args.id)
         elif args.command == "history":
@@ -34,9 +52,14 @@ async def run(args):
             out = await s.decide(
                 args.id,
                 Decision(action=args.command, proposal_hash=current["proposal_hash"]),
+                actor=actor,
             )
         else:
-            out = s.store.requests()
+            out = [
+                r
+                for r in s.store.requests()
+                if actor["role"] == "approver" or s.store.owner(r["id"]) == actor["id"]
+            ]
         print(json.dumps(out, indent=2, default=str))
 
 
@@ -44,6 +67,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="ProcureFlow durable purchasing workflows"
     )
+    parser.add_argument("--username", required=True)
     parser.add_argument("--home", default=None)
     parser.add_argument("--mode", choices=["demo", "ollama"], default=None)
     commands = parser.add_subparsers(dest="command", required=True)

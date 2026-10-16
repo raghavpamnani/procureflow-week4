@@ -16,6 +16,10 @@ async def main():
             s = await service.create(PurchaseRequest(simulate_timeout=True))
             assert s["pending"], "Human approval interrupt not reached"
             assert s["proposal"]["selected_id"] in {"orbit-32", "cedar-32"}
+            assert {t["tool"] for t in s["tool_trace"]} == {
+                "search_catalog",
+                "get_budget",
+            }
             assert not service.store.orders()
             print(
                 json.dumps(
@@ -26,6 +30,7 @@ async def main():
                         "selected_id": s["proposal"]["selected_id"],
                         "rationale": s["recommendation"]["rationale"],
                         "model_calls": s["model_usage"],
+                        "native_tool_trace": s["tool_trace"],
                         "order_count": 0,
                     },
                     indent=2,

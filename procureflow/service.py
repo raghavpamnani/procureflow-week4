@@ -42,10 +42,12 @@ class Service:
             "errors": [str(t.error) for t in state.tasks if t.error],
         }
 
-    async def drive(self, rid, value):
+    async def drive(self, rid, value, actor=None):
         self.agents.usage.clear()
         try:
-            await self.graph.ainvoke(value, self.config(rid), durability="sync")
+            config = self.config(rid)
+            config["configurable"]["decision_actor"] = actor
+            await self.graph.ainvoke(value, config, durability="sync")
         except Exception:
             self.store.status(rid, "needs_attention")
             raise
@@ -53,15 +55,18 @@ class Service:
         self.store.status(rid, result["status"])
         return result
 
-    async def create(self, request, request_id=None):
+    async def create(self, request, request_id=None, actor=None):
         async with self.lock:
             rid = request_id or uuid.uuid4().hex
             self.agents.usage.clear()
+            if actor:
+                self.store.bind_owner(rid, actor["id"])
             initial = {
                 "request_id": rid,
                 "request": request.model_dump(),
                 "mode": self.agents.mode,
                 "revision": 0,
+                "owner_id": actor["id"] if actor else "trusted-local-sdk",
                 "audit": [],
                 "recent_turns": [],
                 "memory_summary": "",
@@ -72,9 +77,25 @@ class Service:
             }
             return await self.drive(rid, initial)
 
-    async def decide(self, rid, decision):
+    async def decide(self, rid, decision, actor=None):
         async with self.lock:
             state = await self.get(rid)
+            owner = self.store.owner(rid)
+            if actor and not owner and state["pending"]:
+                raise PermissionError(
+                    "This older request has no verified requester; create a new brief"
+                )
+            if owner:
+                if not actor:
+                    raise PermissionError("Authenticated reviewer required")
+                if decision.action in {"approve", "reject"} and (
+                    actor["role"] != "approver" or actor["id"] == owner
+                ):
+                    raise PermissionError(
+                        "Only an independent approver can approve or reject"
+                    )
+                if decision.action == "revise" and actor["id"] != owner:
+                    raise PermissionError("Only the requester can revise this brief")
             if not state["pending"]:
                 if (
                     decision.action == "approve"
@@ -99,7 +120,9 @@ class Service:
                 raise Conflict(
                     "Provide revised requirements; at most four revisions are allowed"
                 )
-            return await self.drive(rid, Command(resume=decision.model_dump()))
+            return await self.drive(
+                rid, Command(resume=decision.model_dump()), actor=actor
+            )
 
     async def retry(self, rid):
         async with self.lock:
@@ -135,7 +158,7 @@ class Service:
             "checkpoint_id": checkpoint_id,
         }
 
-    async def fork(self, rid, checkpoint_id, request):
+    async def fork(self, rid, checkpoint_id, request, actor=None):
         async with self.lock:
             await self.get(rid)
             source = await self.graph.aget_state(self.config(rid, checkpoint_id))
@@ -170,6 +193,10 @@ class Service:
                 memory_summary=source.values.get("memory_summary", ""),
                 model_usage=[],
             )
+            if actor:
+                self.store.bind_owner(new_id, actor["id"])
+                values["owner_id"] = actor["id"]
+            values["decision_actor"] = None
             self.store.register(new_id, values["request"], self.agents.mode)
             await self.graph.aupdate_state(
                 self.config(new_id), values, as_node="intake"
